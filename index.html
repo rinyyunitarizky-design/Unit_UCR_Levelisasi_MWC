@@ -4,10 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard Eksekutif Levelisasi MWC - Unit UCR MWD PALU</title>
+    <!-- CDN dioptimalkan dengan defer / preconnect agar tidak memblokir render awal -->
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         .bg-custom-teal { background-color: #0a7c6e; }
@@ -91,11 +94,14 @@
                             <h3 class="text-xl sm:text-2xl font-black mt-2">Matrix Aktivitas Keseluruhan MWC</h3>
                             <p class="text-emerald-100 text-xs sm:text-sm mt-1">Menampilkan seluruh 26 indikator dari server secara utuh dan terstruktur.</p>
                         </div>
-                        <div class="flex flex-wrap gap-2 w-full md:w-auto justify-end">
+                        <div class="flex flex-wrap gap-2 w-full md:w-auto justify-end items-center">
+                            <span id="syncIndicator" class="hidden text-[11px] bg-white/15 px-3 py-1.5 rounded-lg text-emerald-100 items-center gap-1.5">
+                                <i class="fa-solid fa-sync fa-spin"></i> Sinkronisasi...
+                            </span>
                             <button onclick="exportToExcelPro()" class="flex-1 md:flex-none px-4 py-2.5 bg-[#f59e0b] hover:bg-[#d98b04] text-[#086358] font-extrabold text-xs sm:text-sm rounded-xl shadow transition flex items-center justify-center gap-2">
                                 <i class="fa-solid fa-file-excel"></i> Ekspor Excel Pro
                             </button>
-                            <button onclick="loadMatrixData(true)" class="px-3 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition" title="Muat Ulang">
+                            <button onclick="loadMatrixData(true)" class="px-3 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition" title="Muat Ulang Paksa dari Server">
                                 <i class="fa-solid fa-arrows-rotate"></i>
                             </button>
                         </div>
@@ -335,17 +341,33 @@
         </main>
     </div>
 
-    <!-- JAVASCRIPT UTAMA -->
+    <!-- JAVASCRIPT UTAMA (TEROPTIMASI TINGKAT TINGGI) -->
     <script>
-        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwretBlwaF2NIFL9ekfPaBQu12cb_sQ55hT80u2QVNvvZZSppUQMU3iCar4jGlkE56LXw/exec"; // Ganti dengan URL Google Apps Script Anda
+        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwretBlwaF2NIFL9ekfPaBQu12cb_sQ55hT80u2QVNvvZZSppUQMU3iCar4jGlkE56LXw/exec";
+        const CACHE_KEY = "mwc_ucr_palu_data_v1";
+        const CACHE_TIME_KEY = "mwc_ucr_palu_time_v1";
+        const CACHE_TTL = 5 * 60 * 1000; // 5 Menit cache valid
+
         let selectedMWCName = "";
         let currentAdminPin = "";
         let cachedSpreadsheetData = [];
         let lastFetchTime = 0;
 
-        window.onload = function() {
+        // 1. INISIALISASI CEPAT DENGAN LOCALSTORAGE
+        window.addEventListener('DOMContentLoaded', function() {
+            const savedData = localStorage.getItem(CACHE_KEY);
+            const savedTime = Number(localStorage.getItem(CACHE_TIME_KEY)) || 0;
+            
+            if (savedData) {
+                try {
+                    cachedSpreadsheetData = JSON.parse(savedData);
+                    lastFetchTime = savedTime;
+                } catch(e) {
+                    localStorage.removeItem(CACHE_KEY);
+                }
+            }
             showMatrixDashboard();
-        };
+        });
 
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('-translate-x-full');
@@ -397,13 +419,12 @@
             document.getElementById('input_nama_mwc').value = mwcName;
 
             if (cachedSpreadsheetData.length === 0) {
-                try {
-                    let response = await fetch(SCRIPT_URL);
-                    cachedSpreadsheetData = await response.json();
-                } catch(e) {}
+                await fetchFreshDataFromServer();
             }
-            let latestRow = cachedSpreadsheetData.find(item => item["Nama MWC"] === mwcName);
-            populateFormWithData(latestRow || {});
+            // Cari entri terakhir milik MWC bersangkutan secara akurat
+            let mwcRows = cachedSpreadsheetData.filter(item => item["Nama MWC"] === mwcName);
+            let latestRow = mwcRows.length > 0 ? mwcRows[mwcRows.length - 1] : {};
+            populateFormWithData(latestRow);
             switchTab('input');
         }
 
@@ -466,27 +487,59 @@
             }
         }
 
-        async function loadMatrixData(forceRefresh = false) {
-            const container = document.getElementById('verticalMatrixContainer');
-            const now = Date.now();
-            if (!forceRefresh && cachedSpreadsheetData.length > 0 && (now - lastFetchTime < 30000)) {
-                renderMatrixCards(cachedSpreadsheetData);
-                return;
-            }
-            container.innerHTML = `<div class="text-center py-10 bg-white rounded-2xl shadow-sm border"><i class="fa-solid fa-spinner fa-spin text-3xl text-[#0a7c6e]"></i><p class="text-gray-500 mt-2 text-sm">Memuat rekap data...</p></div>`;
+        // 2. STALE-WHILE-REVALIDATE (TAMPILKAN CACHE INSTAN, PERBARUI DIAM-DIAM DI BELAKANG LAYAR)
+        async function fetchFreshDataFromServer() {
+            const syncEl = document.getElementById('syncIndicator');
+            if (syncEl) syncEl.classList.replace('hidden', 'inline-flex');
+            
             try {
                 let response = await fetch(SCRIPT_URL);
-                cachedSpreadsheetData = await response.json();
+                let freshData = await response.json();
+                cachedSpreadsheetData = freshData;
                 lastFetchTime = Date.now();
-                renderMatrixCards(cachedSpreadsheetData);
-            } catch (err) {
-                container.innerHTML = `<div class="bg-red-50 text-red-600 p-6 rounded-2xl text-center text-sm">Gagal memuat rekap data server.</div>`;
+                localStorage.setItem(CACHE_KEY, JSON.stringify(freshData));
+                localStorage.setItem(CACHE_TIME_KEY, String(lastFetchTime));
+                return freshData;
+            } finally {
+                if (syncEl) syncEl.classList.replace('inline-flex', 'hidden');
             }
         }
 
+        async function loadMatrixData(forceRefresh = false) {
+            const container = document.getElementById('verticalMatrixContainer');
+            const now = Date.now();
+
+            // Jika punya data di cache lokal, langsung render tanpa menunggu spinner jaringan!
+            if (cachedSpreadsheetData.length > 0) {
+                renderMatrixCards(cachedSpreadsheetData);
+                // Jika belum kadaluarsa dan tidak dipaksa refresh, selesai!
+                if (!forceRefresh && (now - lastFetchTime < CACHE_TTL)) {
+                    return;
+                }
+                // Jika sudah lewat 5 menit atau klik refresh, tarik data terbaru di latar belakang
+                try {
+                    const updatedData = await fetchFreshDataFromServer();
+                    if (document.getElementById('mwcFilterDropdown').value === "ALL") {
+                        renderMatrixCards(updatedData);
+                    }
+                } catch (e) { /* Tetap pertahankan tampilan cache jika offline */ }
+                return;
+            }
+
+            // Hanya muncul spinner layar penuh saat benar-benar pertama kali membuka aplikasi (cache kosong)
+            container.innerHTML = `<div class="text-center py-10 bg-white rounded-2xl shadow-sm border"><i class="fa-solid fa-spinner fa-spin text-3xl text-[#0a7c6e]"></i><p class="text-gray-500 mt-2 text-sm">Memuat rekap data pertama kali...</p></div>`;
+            try {
+                const freshData = await fetchFreshDataFromServer();
+                renderMatrixCards(freshData);
+            } catch (err) {
+                container.innerHTML = `<div class="bg-red-50 text-red-600 p-6 rounded-2xl text-center text-sm">Gagal memuat rekap data server. Periksa koneksi internet Anda.</div>`;
+            }
+        }
+
+        // 3. SINGLE-PASS DOM RENDERING (TANPA REFLOW BERULANG)
         function renderMatrixCards(data) {
             const container = document.getElementById('verticalMatrixContainer');
-            if(data.length === 0) {
+            if(!data || data.length === 0) {
                 container.innerHTML = `<div class="bg-white p-8 rounded-2xl text-center text-gray-500 text-sm shadow-sm">Belum ada data terekam.</div>`;
                 document.getElementById('statDaiyah').innerText = "0";
                 document.getElementById('statKaderTarif').innerText = "0";
@@ -494,65 +547,68 @@
                 document.getElementById('statKaderTanfidz').innerText = "0";
                 return;
             }
+
             let latestPerMWC = {};
-            data.forEach(row => {
-                let mwc = row["Nama MWC"];
-                if(mwc) { latestPerMWC[mwc] = row; }
-            });
-            container.innerHTML = "";
+            for (let i = 0; i < data.length; i++) {
+                let mwc = data[i]["Nama MWC"];
+                if (mwc) latestPerMWC[mwc] = data[i];
+            }
+
             const mwcList = ["MWC Tawaeli", "MWC Mantikulore", "MWC Palu Selatan", "MWC Tatanga", "MWC Ulujadi"];
             let totalDaiyah = 0, totalKaderTarif = 0, totalKaderTakwin = 0, totalKaderTanfidz = 0;
+            let allCardsHtml = [];
 
             mwcList.forEach(mwcName => {
                 let rowData = latestPerMWC[mwcName];
+                let itemsHtml = [];
+
                 if (rowData) {
                     for (const [key, value] of Object.entries(rowData)) {
                         let valNum = Number(value) || 0;
                         let kLower = key.toLowerCase();
                         if (kLower.includes("daiyah")) {
                             totalDaiyah += valNum;
-                        } else if (kLower.includes("ta'arif") || kLower.includes("ta’rif")) {
+                        } else if (kLower.includes("ta'rif") || kLower.includes("ta’rif")) {
                             if (kLower.includes("kader")) totalKaderTarif += valNum;
                         } else if (kLower.includes("takwin") && kLower.includes("kader")) {
                             totalKaderTakwin += valNum;
                         } else if (kLower.includes("tanfidz") && kLower.includes("kader")) {
                             totalKaderTanfidz += valNum;
                         }
-                    }
-                }
-                let card = document.createElement('div');
-                card.className = "mwc-vertical-card bg-white shadow-xl rounded-2xl border border-gray-200 overflow-hidden mb-6";
-                card.setAttribute('data-mwc', mwcName);
-                let headerHtml = `
-                    <div class="bg-gradient-to-r from-[#0a7c6e] to-[#086358] text-white p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                        <div>
-                            <span class="bg-[#f59e0b] text-[#086358] text-[9px] font-black px-2.5 py-0.5 rounded-full uppercase">Wilayah MWC</span>
-                            <h4 class="text-lg font-black mt-0.5">${mwcName}</h4>
-                        </div>
-                        <button onclick="downloadMWCPDF('${mwcName}')" class="bg-[#f59e0b] hover:bg-[#d98b04] text-[#086358] font-bold text-xs px-3.5 py-1.5 rounded-lg shadow transition flex items-center gap-1.5 cursor-pointer">
-                            <i class="fa-solid fa-file-pdf"></i><span>Save PDF MWC</span>
-                        </button>
-                    </div>
-                `;
-                let bodyHtml = `<div class="p-5 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">`;
-                if (rowData) {
-                    for (const [key, value] of Object.entries(rowData)) {
+
                         if (key !== "Timestamp" && key !== "Nama MWC" && key !== "rowIndex") {
-                            bodyHtml += `
+                            itemsHtml.push(`
                                 <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
                                     <span class="text-gray-500 font-semibold mb-1 text-[11px]">${key}</span>
                                     <span class="font-black text-[#0a7c6e] text-sm">${value !== "" ? value : "-"}</span>
                                 </div>
-                            `;
+                            `);
                         }
                     }
                 } else {
-                    bodyHtml += `<div class="col-span-full text-center py-6 text-gray-400 italic">Belum ada data terekam untuk wilayah ini.</div>`;
+                    itemsHtml.push(`<div class="col-span-full text-center py-6 text-gray-400 italic">Belum ada data terekam untuk wilayah ini.</div>`);
                 }
-                bodyHtml += `</div>`;
-                card.innerHTML = headerHtml + bodyHtml;
-                container.appendChild(card);
+
+                allCardsHtml.push(`
+                    <div class="mwc-vertical-card bg-white shadow-xl rounded-2xl border border-gray-200 overflow-hidden mb-6" data-mwc="${mwcName}">
+                        <div class="bg-gradient-to-r from-[#0a7c6e] to-[#086358] text-white p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                            <div>
+                                <span class="bg-[#f59e0b] text-[#086358] text-[9px] font-black px-2.5 py-0.5 rounded-full uppercase">Wilayah MWC</span>
+                                <h4 class="text-lg font-black mt-0.5">${mwcName}</h4>
+                            </div>
+                            <button onclick="downloadMWCPDF('${mwcName}')" class="bg-[#f59e0b] hover:bg-[#d98b04] text-[#086358] font-bold text-xs px-3.5 py-1.5 rounded-lg shadow transition flex items-center gap-1.5 cursor-pointer">
+                                <i class="fa-solid fa-file-pdf"></i><span>Save PDF MWC</span>
+                            </button>
+                        </div>
+                        <div class="p-5 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                            ${itemsHtml.join('')}
+                        </div>
+                    </div>
+                `);
             });
+
+            // Masukkan ke DOM sekaligus dalam 1 operasi tulis
+            container.innerHTML = allCardsHtml.join('');
 
             if (document.getElementById('mwcFilterDropdown').value === "ALL") {
                 document.getElementById('statDaiyah').innerText = totalDaiyah.toLocaleString('id-ID');
@@ -562,37 +618,37 @@
             }
         }
 
+        // 4. OPTIMASI HALAMAN AGREGAT (AKUMULASI STRING ARRAY)
         async function renderAggregateData() {
             const grid = document.getElementById('aggregateSummaryGrid');
-            grid.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-spinner fa-spin text-2xl text-[#0a7c6e]"></i></div>`;
             if (cachedSpreadsheetData.length === 0) {
+                grid.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-spinner fa-spin text-2xl text-[#0a7c6e]"></i></div>`;
                 try {
-                    let response = await fetch(SCRIPT_URL);
-                    cachedSpreadsheetData = await response.json();
+                    await fetchFreshDataFromServer();
                 } catch(e) {
                     grid.innerHTML = `<div class="col-span-full text-red-500 text-center">Gagal memuat data agregat.</div>`;
                     return;
                 }
             }
+
             let latestPerMWC = {};
-            cachedSpreadsheetData.forEach(row => {
-                let mwc = row["Nama MWC"];
-                if(mwc) { latestPerMWC[mwc] = row; }
-            });
             let indicatorKeys = new Set();
             cachedSpreadsheetData.forEach(row => {
+                let mwc = row["Nama MWC"];
+                if(mwc) latestPerMWC[mwc] = row;
                 for(let k of Object.keys(row)) {
                     if(k !== "Timestamp" && k !== "Nama MWC" && k !== "rowIndex") {
                         indicatorKeys.add(k);
                     }
                 }
             });
+
             const mwcList = ["MWC Tawaeli", "MWC Mantikulore", "MWC Palu Selatan", "MWC Tatanga", "MWC Ulujadi"];
-            grid.innerHTML = "";
+            let cardsHtml = [];
 
             indicatorKeys.forEach(key => {
                 let numericSum = 0, hasValidNumber = false, isNumericField = true;
-                let textValuesCount = {}, mwcDetailsHtml = "";
+                let textValuesCount = {}, mwcDetailsHtml = [];
 
                 mwcList.forEach(mwcName => {
                     let rowData = latestPerMWC[mwcName];
@@ -608,26 +664,24 @@
                     if (cleanVal !== "" && cleanVal !== "-" && !isNaN(numVal)) {
                         numericSum += numVal;
                         hasValidNumber = true;
-                    } else {
-                        if (cleanVal !== "" && cleanVal !== "-") {
-                            isNumericField = false;
-                            if (cleanVal.toLowerCase() !== "tidak") {
-                                textValuesCount[cleanVal] = (textValuesCount[cleanVal] || 0) + 1;
-                            }
+                    } else if (cleanVal !== "" && cleanVal !== "-") {
+                        isNumericField = false;
+                        if (cleanVal.toLowerCase() !== "tidak") {
+                            textValuesCount[cleanVal] = (textValuesCount[cleanVal] || 0) + 1;
                         }
                     }
                     let shortName = mwcName.replace("MWC ", "");
-                    mwcDetailsHtml += `
+                    mwcDetailsHtml.push(`
                         <div class="flex justify-between items-center bg-white px-2.5 py-1 rounded border border-gray-100 text-[11px]">
                             <span class="text-gray-600 font-medium">${shortName}</span>
                             <span class="font-bold text-[#0a7c6e]">${val}</span>
                         </div>
-                    `;
+                    `);
                 });
 
                 let aggregateDisplay = (isNumericField || hasValidNumber) ? numericSum.toLocaleString('id-ID') : (Object.entries(textValuesCount).map(([t, c]) => `${t} (${c})`).join(', ') || "Nihil");
 
-                grid.innerHTML += `
+                cardsHtml.push(`
                     <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
                         <div class="flex justify-between items-start mb-3 border-b pb-2">
                             <span class="text-gray-800 font-bold text-xs uppercase tracking-wide pr-2">${key}</span>
@@ -638,11 +692,13 @@
                         </div>
                         <div class="space-y-1">
                             <p class="text-[10px] font-bold text-gray-400 uppercase mb-1">Perolehan Masing-Masing MWC:</p>
-                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5">${mwcDetailsHtml}</div>
+                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5">${mwcDetailsHtml.join('')}</div>
                         </div>
                     </div>
-                `;
+                `);
             });
+
+            grid.innerHTML = cardsHtml.join('');
         }
 
         function downloadMWCPDF(mwcName) {
@@ -756,51 +812,53 @@
 
         async function loadMWCHistory() {
             const container = document.getElementById('historyContainer');
-            container.innerHTML = `<div class="text-center py-10"><i class="fa-solid fa-spinner fa-spin text-2xl text-[#0a7c6e]"></i></div>`;
             try {
                 if (cachedSpreadsheetData.length === 0) {
-                    let response = await fetch(SCRIPT_URL);
-                    cachedSpreadsheetData = await response.json();
+                    container.innerHTML = `<div class="text-center py-10"><i class="fa-solid fa-spinner fa-spin text-2xl text-[#0a7c6e]"></i></div>`;
+                    await fetchFreshDataFromServer();
                 }
                 let filtered = cachedSpreadsheetData.filter(item => item["Nama MWC"] === selectedMWCName);
                 if(filtered.length === 0) {
                     container.innerHTML = `<div class="bg-white p-8 rounded-2xl text-center text-gray-400 text-xs border">Belum ada log aktivitas untuk ${selectedMWCName}.</div>`;
                     return;
                 }
-                container.innerHTML = "";
-                filtered.reverse().forEach(row => {
+                
+                let historyHtml = [];
+                filtered.slice().reverse().forEach(row => {
                     let timeFormatted = row["Timestamp"] ? new Date(row["Timestamp"]).toLocaleString('id-ID') : "Waktu tidak tercatat";
-                    let card = document.createElement('div');
-                    card.className = "bg-white shadow-xl rounded-2xl border border-gray-200 overflow-hidden mb-6";
-                    let cardHeader = `
-                        <div class="bg-gradient-to-r from-[#0a7c6e] to-[#086358] text-white p-4 flex justify-between items-center">
-                            <div>
-                                <span class="bg-[#f59e0b] text-[#086358] text-[10px] font-extrabold px-3 py-1 rounded-full uppercase">Log Baris #${row["rowIndex"] || '-'}</span>
-                                <h4 class="text-base font-bold mt-1">${row["Nama MWC"]}</h4>
-                            </div>
-                            <span class="text-[11px] text-emerald-100">${timeFormatted}</span>
-                        </div>
-                    `;
-                    let gridContent = `<div class="p-4 sm:p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 text-xs">`;
+                    let gridItems = [];
                     for (const [key, value] of Object.entries(row)) {
                         if(key !== "Timestamp" && key !== "Nama MWC" && key !== "rowIndex") {
-                            gridContent += `
+                            gridItems.push(`
                                 <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex flex-col justify-between">
                                     <span class="text-gray-500 font-semibold mb-1">${key}</span>
                                     <span class="font-black text-[#0a7c6e] text-sm">${value !== "" ? value : "-"}</span>
                                 </div>
-                            `;
+                            `);
                         }
                     }
-                    gridContent += `</div>`;
-                    card.innerHTML = cardHeader + gridContent;
-                    container.appendChild(card);
+                    historyHtml.push(`
+                        <div class="bg-white shadow-xl rounded-2xl border border-gray-200 overflow-hidden mb-6">
+                            <div class="bg-gradient-to-r from-[#0a7c6e] to-[#086358] text-white p-4 flex justify-between items-center">
+                                <div>
+                                    <span class="bg-[#f59e0b] text-[#086358] text-[10px] font-extrabold px-3 py-1 rounded-full uppercase">Log Baris #${row["rowIndex"] || '-'}</span>
+                                    <h4 class="text-base font-bold mt-1">${row["Nama MWC"]}</h4>
+                                </div>
+                                <span class="text-[11px] text-emerald-100">${timeFormatted}</span>
+                            </div>
+                            <div class="p-4 sm:p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 text-xs">
+                                ${gridItems.join('')}
+                            </div>
+                        </div>
+                    `);
                 });
+                container.innerHTML = historyHtml.join('');
             } catch (err) {
                 container.innerHTML = `<div class="text-red-500 p-6 text-center text-xs">Gagal mengambil log aktivitas.</div>`;
             }
         }
 
+        // 5. OPTIMISTIC UI UPDATE SAAT KIRIM FORM (LANGSUNG MUNCUL TANPA MENUNGGU RELOAD LAMA)
         document.getElementById('levelisasiForm').addEventListener('submit', function(e) {
             e.preventDefault();
             const btn = document.getElementById('submitBtn');
@@ -846,14 +904,50 @@
                 body: JSON.stringify(formData)
             })
             .then(() => {
+                // Perbarui cache lokal secara optimistis agar dashboard langsung menampilkan angka terbaru
+                const optimisticRecord = {
+                    "Timestamp": new Date().toISOString(),
+                    "Nama MWC": formData.nama_mwc,
+                    "rowIndex": formData.rowIndex || (cachedSpreadsheetData.length + 2),
+                    "Jumlah pengurus yg aktif": formData.p_aktif,
+                    "Jumlah pengurus yang kurang aktif": formData.p_kurang_aktif,
+                    "Memiliki Layanan sosial dan Kesehatan (klinik)": formData.layanan_sosial,
+                    "Jumlah Daiyah": formData.jml_daiyah,
+                    "Jumlah kader Ta’rif": formData.kader_tarif,
+                    "Jumlah kader Takwin": formData.kader_takwin,
+                    "Jumlah Kader Tanfidz": formData.kader_tanfidz,
+                    "Jumlah tenaga kesehatan (perawat, dokter, bidan)": formData.jml_nakes,
+                    "Jumlah Alumni Stiba": formData.alumni_stiba,
+                    "Jumlah Muhaffidzah": formData.jml_muhaffidzah,
+                    "Jumlah MT": formData.jml_mt,
+                    "Jumlah dirosa": formData.jml_dirosa,
+                    "Punya kantor/PDM/Sekret (Jika ada, tuliskan jika di sewa / punya sendiri)": formData.status_kantor,
+                    "Memiliki Unit Usaha MWC": formData.unit_usaha,
+                    "Memiliki Media dakwah online": formData.media_online,
+                    "Jenis media dakwah": formData.jenis_media,
+                    "Memiliki hardware yang memadai (laptop/PC, kamera dll)": formData.hardware,
+                    "Jumlah murabbiyah tarif 1 dan 2": formData.m_tarif,
+                    "Jumlah murabbiyah takwin": formData.m_takwin,
+                    "Jumlah donatur": formData.donatur,
+                    "Jumlah trainer Diklat Murabbiyah": formData.trainer_murabbiyah,
+                    "Jumlah kader yg mengikuti pelatihan Dirosa": formData.kader_dirosa,
+                    "Jumlah pengajar qur'an (mudarrisah)": formData.mudarrisah,
+                    "Jumlah pengurus yang telah mengikuti Diklat Manajemen Pengurus": formData.diklat_manajemen,
+                    "Jumlah pengurus yang telah mengikuti Diklat Kepemimpinan": formData.diklat_kepemimpinan,
+                    "Jumlah tim tanggap sosial (Wahdah Peduli, Tim Peny. Jenazah, dll)": formData.tim_sosial
+                };
+
+                cachedSpreadsheetData.push(optimisticRecord);
+                localStorage.setItem(CACHE_KEY, JSON.stringify(cachedSpreadsheetData));
+                lastFetchTime = 0; // Tandai agar sinkronisasi latar belakang tetap berjalan setelah pindah halaman
+
                 Swal.fire({
                     title: 'Berhasil Disinkronkan!',
                     text: `Data untuk ${selectedMWCName} berhasil diperbarui di server pusat.`,
                     icon: 'success',
                     confirmButtonColor: '#0a7c6e'
                 });
-                cachedSpreadsheetData = [];
-                lastFetchTime = 0;
+                
                 showMatrixDashboard();
             })
             .catch(() => {
